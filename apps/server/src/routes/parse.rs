@@ -6,15 +6,15 @@
 
 use crate::error::ApiError;
 use crate::services::{
-    cache::DiskCache, extract_data_model, process_geometry, process_streaming,
-    serialize_data_model_to_parquet, serialize_to_parquet,
-    serialize_to_parquet_optimized_with_stats, OptimizedStats, VERTEX_MULTIPLIER,
+    cache::DiskCache, extract_data_model, process_geometry_filtered,
+    process_streaming, serialize_data_model_to_parquet, serialize_to_parquet,
+    serialize_to_parquet_optimized_with_stats, OpeningFilterMode, OptimizedStats, VERTEX_MULTIPLIER,
 };
 use crate::types::{MetadataResponse, ModelMetadata, ParseResponse, ProcessingStats, StreamEvent};
 use crate::AppState;
 use axum::{
     body::Body,
-    extract::{Multipart, State},
+    extract::{Multipart, Query, State},
     http::{header, StatusCode},
     response::{sse::{Event, KeepAlive, Sse}, Response},
     Json,
@@ -25,6 +25,24 @@ use ifc_lite_core::EntityScanner;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::io::Read;
+
+/// Query parameters shared by all parse endpoints.
+#[derive(serde::Deserialize, Default)]
+pub struct ParseQuery {
+    /// Opening filter mode: "default", "ignore_all", or "ignore_opaque".
+    #[serde(default)]
+    pub opening_filter: OpeningFilterMode,
+}
+
+fn reject_unsupported_streaming_opening_filter(query: &ParseQuery) -> Result<(), ApiError> {
+    if query.opening_filter == OpeningFilterMode::Default {
+        return Ok(());
+    }
+
+    Err(ApiError::BadRequest(
+        "opening_filter is not yet supported for streaming endpoints; use /api/v1/parse or /api/v1/parse/parquet instead".into(),
+    ))
+}
 
 /// Extract file data from multipart request.
 /// Automatically decompresses gzip-compressed files.
@@ -67,6 +85,7 @@ async fn extract_file(multipart: &mut Multipart) -> Result<Vec<u8>, ApiError> {
 /// POST /api/v1/parse - Full synchronous parse.
 pub async fn parse_full(
     State(state): State<AppState>,
+    Query(query): Query<ParseQuery>,
     mut multipart: Multipart,
 ) -> Result<Json<ParseResponse>, ApiError> {
     // Extract file from multipart
@@ -79,8 +98,8 @@ pub async fn parse_full(
         });
     }
 
-    // Generate cache key
-    let cache_key = DiskCache::generate_key(&data);
+    // Generate cache key (include opening filter so different modes get different cache entries)
+    let cache_key = format!("{}-{}", DiskCache::generate_key(&data), query.opening_filter.cache_key_suffix());
 
     // Check cache first
     if let Some(mut cached) = state.cache.get::<ParseResponse>(&cache_key).await? {
@@ -93,13 +112,17 @@ pub async fn parse_full(
 
     // Parse content
     let content = String::from_utf8(data)?;
+    let opening_filter = query.opening_filter;
 
     // Process on blocking thread pool (CPU-intensive)
-    let result = tokio::task::spawn_blocking(move || process_geometry(&content)).await?;
+    let result = tokio::task::spawn_blocking(move || process_geometry_filtered(&content, opening_filter)).await?;
 
     let response = ParseResponse {
         cache_key: cache_key.clone(),
         meshes: result.meshes,
+        mesh_coordinate_space: result.mesh_coordinate_space,
+        site_transform: result.site_transform,
+        building_transform: result.building_transform,
         metadata: result.metadata,
         stats: result.stats,
     };
@@ -119,8 +142,11 @@ pub async fn parse_full(
 /// POST /api/v1/parse/stream - Streaming SSE parse.
 pub async fn parse_stream(
     State(state): State<AppState>,
+    Query(query): Query<ParseQuery>,
     mut multipart: Multipart,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    reject_unsupported_streaming_opening_filter(&query)?;
+
     // Extract file
     let data = extract_file(&mut multipart).await?;
 
@@ -198,6 +224,7 @@ pub enum ParquetStreamEvent {
 /// After `complete`, client should fetch data model via `/api/v1/data-model/{cache_key}`.
 pub async fn parse_parquet_stream(
     State(state): State<AppState>,
+    Query(query): Query<ParseQuery>,
     mut multipart: Multipart,
 ) -> Result<Sse<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Event, Infallible>> + Send>>>, ApiError> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -205,6 +232,8 @@ pub async fn parse_parquet_stream(
     use std::sync::{Arc, Mutex};
     use crate::types::MeshData;
     use futures::StreamExt;
+
+    reject_unsupported_streaming_opening_filter(&query)?;
 
     // Extract file
     let data = extract_file(&mut multipart).await?;
@@ -216,8 +245,8 @@ pub async fn parse_parquet_stream(
         });
     }
 
-    // Generate cache key before processing
-    let cache_key = DiskCache::generate_key(&data);
+    // Generate cache key before processing (include opening filter)
+    let cache_key = format!("{}-{}", DiskCache::generate_key(&data), query.opening_filter.cache_key_suffix());
     let cache_key_clone = cache_key.clone();
 
     // OPTIMIZATION: Check cache first and fast-path return if available
@@ -326,7 +355,7 @@ pub async fn parse_parquet_stream(
                     }
                 }
             }
-            StreamEvent::Complete { stats, metadata, .. } => {
+            StreamEvent::Complete { stats, metadata, mesh_coordinate_space, site_transform, building_transform, .. } => {
                 // OPTIMIZATION: Use accumulated meshes instead of re-processing
                 // This eliminates duplicate geometry extraction (~1100ms savings for large files)
                 let cache = cache_for_geometry.clone();
@@ -334,6 +363,9 @@ pub async fn parse_parquet_stream(
                 let stats_clone = stats.clone();
                 let metadata_clone = metadata.clone();
                 let meshes_for_cache = accumulated_meshes.clone();
+                let coord_space = mesh_coordinate_space.clone();
+                let site_tf = site_transform.clone();
+                let building_tf = building_transform.clone();
 
                 tokio::spawn(async move {
                     // Take accumulated meshes (moves out of Arc<Mutex>)
@@ -387,6 +419,9 @@ pub async fn parse_parquet_stream(
                             cache_key: key.clone(),
                             metadata: metadata_clone,
                             stats: stats_clone,
+                            mesh_coordinate_space: coord_space,
+                            site_transform: site_tf,
+                            building_transform: building_tf,
                             data_model_stats: None, // Data model cached separately via data model endpoint
                         };
                         if let Ok(metadata_json) = serde_json::to_vec(&metadata_header) {
@@ -507,6 +542,12 @@ pub struct ParquetMetadataHeader {
     pub cache_key: String,
     pub metadata: ModelMetadata,
     pub stats: ProcessingStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh_coordinate_space: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site_transform: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub building_transform: Option<Vec<f64>>,
     /// Data model statistics (if included).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_model_stats: Option<DataModelStats>,
@@ -530,6 +571,7 @@ pub struct DataModelStats {
 /// - Body: Binary Parquet data (mesh_parquet + vertex_parquet + index_parquet)
 pub async fn parse_parquet(
     State(state): State<AppState>,
+    Query(query): Query<ParseQuery>,
     mut multipart: Multipart,
 ) -> Result<Response, ApiError> {
     // Extract file from multipart
@@ -542,8 +584,8 @@ pub async fn parse_parquet(
         });
     }
 
-    // Generate cache key
-    let cache_key = DiskCache::generate_key(&data);
+    // Generate cache key (include opening filter so different modes get different cache entries)
+    let cache_key = format!("{}-{}", DiskCache::generate_key(&data), query.opening_filter.cache_key_suffix());
 
     // Check cache first (before any processing)
     let parquet_cache_key = format!("{}-parquet-v2", cache_key);
@@ -584,11 +626,12 @@ pub async fn parse_parquet(
     // rayon::join works correctly here because rayon has its own thread pool
     // that's independent of tokio's blocking thread pool
     let serialize_start = tokio::time::Instant::now();
+    let opening_filter = query.opening_filter;
     let ((geometry_result, geometry_parquet), (data_model_stats, data_model_parquet)) =
         tokio::task::spawn_blocking(move || {
             // First: extract geometry and data model in parallel
             let (geometry_result, data_model) = rayon::join(
-                || process_geometry(&content),
+                || process_geometry_filtered(&content, opening_filter),
                 || extract_data_model(&content),
             );
 
@@ -649,6 +692,9 @@ pub async fn parse_parquet(
         cache_key: cache_key_clone.clone(),
         metadata: geometry_result.metadata,
         stats: geometry_result.stats,
+        mesh_coordinate_space: geometry_result.mesh_coordinate_space,
+        site_transform: geometry_result.site_transform,
+        building_transform: geometry_result.building_transform,
         data_model_stats: Some(data_model_stats),
     };
 
@@ -694,6 +740,12 @@ pub struct OptimizedParquetMetadataHeader {
     pub cache_key: String,
     pub metadata: ModelMetadata,
     pub stats: ProcessingStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh_coordinate_space: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site_transform: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub building_transform: Option<Vec<f64>>,
     pub optimization_stats: OptimizedStats,
     /// Vertex multiplier for dequantization (10,000 = 0.1mm precision)
     pub vertex_multiplier: f32,
@@ -713,6 +765,7 @@ pub struct OptimizedParquetMetadataHeader {
 /// Typical compression: 3-5x smaller than basic Parquet, 50-75x smaller than JSON.
 pub async fn parse_parquet_optimized(
     State(state): State<AppState>,
+    Query(query): Query<ParseQuery>,
     mut multipart: Multipart,
 ) -> Result<Response, ApiError> {
     // Extract file from multipart
@@ -725,8 +778,8 @@ pub async fn parse_parquet_optimized(
         });
     }
 
-    // Generate cache key
-    let cache_key = DiskCache::generate_key(&data);
+    // Generate cache key (include opening filter so different modes get different cache entries)
+    let cache_key = format!("{}-{}", DiskCache::generate_key(&data), query.opening_filter.cache_key_suffix());
 
     tracing::info!(
         cache_key = %cache_key,
@@ -736,9 +789,10 @@ pub async fn parse_parquet_optimized(
 
     // Parse content
     let content = String::from_utf8(data)?;
+    let opening_filter = query.opening_filter;
 
     // Process on blocking thread pool (CPU-intensive)
-    let result = tokio::task::spawn_blocking(move || process_geometry(&content)).await?;
+    let result = tokio::task::spawn_blocking(move || process_geometry_filtered(&content, opening_filter)).await?;
 
     // Serialize to optimized Parquet (with deduplication, quantization, etc.)
     // Don't include normals by default - client can compute them
@@ -759,6 +813,9 @@ pub async fn parse_parquet_optimized(
         cache_key,
         metadata: result.metadata,
         stats: result.stats,
+        mesh_coordinate_space: result.mesh_coordinate_space,
+        site_transform: result.site_transform,
+        building_transform: result.building_transform,
         optimization_stats: opt_stats,
         vertex_multiplier: VERTEX_MULTIPLIER,
     };

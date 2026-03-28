@@ -8,7 +8,10 @@ use crate::services::cache::DiskCache;
 use crate::types::{CoordinateInfo, MeshData, ModelMetadata, ProcessingStats, StreamEvent};
 use async_stream::stream;
 use futures::Stream;
-use ifc_lite_core::{build_entity_index, DecodedEntity, EntityDecoder, EntityIndex, EntityScanner, IfcType};
+use ifc_lite_core::{
+    build_entity_index, scan_placement_bounds, DecodedEntity, EntityDecoder, EntityIndex, EntityScanner,
+    IfcType,
+};
 use ifc_lite_geometry::{calculate_normals, GeometryRouter};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -38,6 +41,12 @@ struct PreparedData {
     parse_time_ms: u64,
     /// OPTIMIZATION: Precomputed unit scale to avoid parsing content per mesh
     unit_scale: f64,
+    /// RTC offset for large-coordinate models (preserves precision in f32 output)
+    rtc_offset: (f64, f64, f64),
+    /// IfcSite ObjectPlacement as a column-major 4×4 matrix (metres).
+    site_transform: Option<Vec<f64>>,
+    /// IfcBuilding ObjectPlacement as a column-major 4×4 matrix (metres).
+    building_transform: Option<Vec<f64>>,
 }
 
 /// Extract entity references from a list attribute.
@@ -69,6 +78,8 @@ fn prepare_streaming_data(content: String) -> PreparedData {
     let mut jobs: Vec<EntityJob> = Vec::with_capacity(2000);
     let mut schema_version = "IFC2X3".to_string();
     let mut total_entities = 0usize;
+    let mut site_entity_pos: Option<(usize, usize)> = None;
+    let mut building_entity_pos: Option<(usize, usize)> = None;
 
     while let Some((id, type_name, start, end)) = scanner.next_entity() {
         total_entities += 1;
@@ -81,6 +92,10 @@ fn prepare_streaming_data(content: String) -> PreparedData {
                     void_index.entry(host).or_default().push(opening);
                 }
             }
+        } else if type_name == "IFCSITE" && site_entity_pos.is_none() {
+            site_entity_pos = Some((start, end));
+        } else if type_name == "IFCBUILDING" && building_entity_pos.is_none() {
+            building_entity_pos = Some((start, end));
         }
 
         if ifc_lite_core::has_geometry_by_name(type_name) {
@@ -103,11 +118,37 @@ fn prepare_streaming_data(content: String) -> PreparedData {
         schema_version = "IFC4".into();
     }
 
-    // Preprocess FacetedBreps and extract unit_scale
-    let router = GeometryRouter::with_units(&content, &mut decoder);
+    // Preprocess FacetedBreps and extract unit_scale + rtc_offset
+    let mut router = GeometryRouter::with_units(&content, &mut decoder);
+    let rtc_jobs: Vec<(u32, usize, usize, IfcType)> = jobs
+        .iter()
+        .map(|j| (j.id, j.start, j.end, j.ifc_type))
+        .collect();
+    let rtc_offset = match router.detect_rtc_offset_from_jobs(&rtc_jobs, &mut decoder) {
+        Some(offset) => offset,
+        None => {
+            // No usable translation samples — fall back to full-file coordinate scan
+            // for files where large real-world coordinates are encoded in points
+            // rather than in placement transforms.
+            scan_placement_bounds(&content).rtc_offset()
+        }
+    };
+    router.set_rtc_offset(rtc_offset);
     if !faceted_brep_ids.is_empty() {
         router.preprocess_faceted_breps(&faceted_brep_ids, &mut decoder);
     }
+    // Resolve site/building placement transforms for cache consistency
+    let site_transform: Option<Vec<f64>> = site_entity_pos.and_then(|(start, end)| {
+        let entity = decoder.decode_at(start, end).ok()?;
+        let matrix = router.resolve_scaled_placement(&entity, &mut decoder).ok()?;
+        Some(matrix.to_vec())
+    });
+    let building_transform: Option<Vec<f64>> = building_entity_pos.and_then(|(start, end)| {
+        let entity = decoder.decode_at(start, end).ok()?;
+        let matrix = router.resolve_scaled_placement(&entity, &mut decoder).ok()?;
+        Some(matrix.to_vec())
+    });
+
     // OPTIMIZATION: Extract unit_scale before dropping router
     // This allows process_batch to use with_scale() instead of with_units() per mesh
     let unit_scale = router.unit_scale();
@@ -125,6 +166,9 @@ fn prepare_streaming_data(content: String) -> PreparedData {
         total_entities,
         parse_time_ms,
         unit_scale,
+        rtc_offset,
+        site_transform,
+        building_transform,
     }
 }
 
@@ -136,6 +180,7 @@ fn process_batch(
     style_index: Arc<FxHashMap<u32, [f32; 4]>>,
     void_index: Arc<FxHashMap<u32, Vec<u32>>>,
     unit_scale: f64,
+    rtc_offset: (f64, f64, f64),
 ) -> Vec<MeshData> {
     jobs.par_iter()
         .filter_map(|job| {
@@ -150,7 +195,7 @@ fn process_batch(
 
                 // OPTIMIZATION: Use with_scale() instead of with_units()
                 // unit_scale is precomputed once, avoiding content parsing per mesh
-                let local_router = GeometryRouter::with_scale(unit_scale);
+                let local_router = GeometryRouter::with_scale_and_rtc(unit_scale, rtc_offset);
 
                 if let Ok(mut mesh) = local_router.process_element_with_voids(
                     &entity,
@@ -249,7 +294,6 @@ pub fn process_streaming(
             current_type: "indexing".into(),
         };
 
-        let mut batch_number = 0;
         let mut total_processed = 0;
         let mut all_meshes: Vec<MeshData> = Vec::new();
         let mut total_vertices = 0usize;
@@ -293,12 +337,13 @@ pub fn process_streaming(
                 let void_bg = prepared.void_index.clone();
                 let style_bg = prepared.style_index.clone();
                 let unit_scale = prepared.unit_scale;
+                let rtc_offset = prepared.rtc_offset;
                 let tx_clone = tx.clone();
 
                 // Spawn batch processing task
                 tokio::spawn(async move {
                     let result = tokio::task::spawn_blocking(move || {
-                        process_batch(chunk_vec, content_bg, index_bg, style_bg, void_bg, unit_scale)
+                        process_batch(chunk_vec, content_bg, index_bg, style_bg, void_bg, unit_scale, rtc_offset)
                     }).await;
                     
                     let batch_result = match result {
@@ -328,7 +373,7 @@ pub fn process_streaming(
             // Yield completed batches in order
             while let Some((chunk_len, last_type_name, meshes)) = completed_batches.remove(&next_expected_batch) {
                 total_processed += chunk_len;
-                batch_number = next_expected_batch;
+                let batch_number = next_expected_batch;
 
                 // Update stats
                 for mesh in &meshes {
@@ -381,9 +426,21 @@ pub fn process_streaming(
                 schema_version: prepared.schema_version,
                 entity_count: prepared.total_entities,
                 geometry_entity_count,
-                coordinate_info: CoordinateInfo::default(),
+                coordinate_info: CoordinateInfo {
+                    origin_shift: [
+                        prepared.rtc_offset.0,
+                        prepared.rtc_offset.1,
+                        prepared.rtc_offset.2,
+                    ],
+                    is_geo_referenced: prepared.rtc_offset.0 != 0.0
+                        || prepared.rtc_offset.1 != 0.0
+                        || prepared.rtc_offset.2 != 0.0,
+                },
             },
             cache_key,
+            mesh_coordinate_space: Some("site_local".to_string()),
+            site_transform: prepared.site_transform,
+            building_transform: prepared.building_transform,
         };
     })
 }

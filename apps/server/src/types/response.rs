@@ -3,63 +3,15 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Response types for the API.
+//!
+//! Shared types (ParseResponse, ModelMetadata, CoordinateInfo, ProcessingStats) are
+//! re-exported from the `ifc-lite-processing` crate. Server-only types remain here.
 
 use super::MeshData;
 use serde::{Deserialize, Serialize};
 
-/// Full parse response with all meshes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParseResponse {
-    /// Cache key for this result (SHA256 of file content).
-    pub cache_key: String,
-    /// All meshes extracted from the IFC file.
-    pub meshes: Vec<MeshData>,
-    /// Model metadata.
-    pub metadata: ModelMetadata,
-    /// Processing statistics.
-    pub stats: ProcessingStats,
-}
-
-/// Model metadata extracted from the IFC file.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModelMetadata {
-    /// IFC schema version (e.g., "IFC2X3", "IFC4", "IFC4X3").
-    pub schema_version: String,
-    /// Total number of entities in the file.
-    pub entity_count: usize,
-    /// Number of geometry-bearing entities.
-    pub geometry_entity_count: usize,
-    /// Coordinate system information.
-    pub coordinate_info: CoordinateInfo,
-}
-
-/// Coordinate system information.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CoordinateInfo {
-    /// Origin shift applied to coordinates (for RTC rendering).
-    pub origin_shift: [f64; 3],
-    /// Whether the model is geo-referenced.
-    pub is_geo_referenced: bool,
-}
-
-/// Processing statistics.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProcessingStats {
-    /// Total number of meshes generated.
-    pub total_meshes: usize,
-    /// Total number of vertices.
-    pub total_vertices: usize,
-    /// Total number of triangles.
-    pub total_triangles: usize,
-    /// Time spent parsing entities (ms).
-    pub parse_time_ms: u64,
-    /// Time spent processing geometry (ms).
-    pub geometry_time_ms: u64,
-    /// Total processing time (ms).
-    pub total_time_ms: u64,
-    /// Whether result was from cache.
-    pub from_cache: bool,
-}
+// Re-export shared types from the processing crate
+pub use ifc_lite_processing::{CoordinateInfo, ModelMetadata, ParseResponse, ProcessingStats};
 
 /// Metadata-only response (no geometry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +62,15 @@ pub enum StreamEvent {
         metadata: ModelMetadata,
         /// Cache key for the result.
         cache_key: String,
+        /// Coordinate space of the mesh vertices (e.g. "site_local").
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mesh_coordinate_space: Option<String>,
+        /// IfcSite ObjectPlacement as a column-major 4×4 matrix (metres).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        site_transform: Option<Vec<f64>>,
+        /// IfcBuilding ObjectPlacement as a column-major 4×4 matrix (metres).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        building_transform: Option<Vec<f64>>,
     },
 
     /// Error occurred.

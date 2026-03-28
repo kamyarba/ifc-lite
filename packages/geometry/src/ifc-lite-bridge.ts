@@ -8,8 +8,31 @@
  */
 
 import { createLogger } from '@ifc-lite/data';
-import init, { IfcAPI, MeshCollection, MeshDataJs, InstancedMeshCollection, InstancedGeometry, InstanceData, SymbolicRepresentationCollection, SymbolicPolyline, SymbolicCircle } from '@ifc-lite/wasm';
-export type { MeshCollection, MeshDataJs, InstancedMeshCollection, InstancedGeometry, InstanceData, SymbolicRepresentationCollection, SymbolicPolyline, SymbolicCircle };
+import init, {
+  IfcAPI,
+  MeshCollection,
+  MeshDataJs,
+  InstancedMeshCollection,
+  InstancedGeometry,
+  InstanceData,
+  SymbolicRepresentationCollection,
+  SymbolicPolyline,
+  SymbolicCircle,
+  ProfileCollection,
+  ProfileEntryJs,
+} from '@ifc-lite/wasm';
+export type {
+  MeshCollection,
+  MeshDataJs,
+  InstancedMeshCollection,
+  InstancedGeometry,
+  InstanceData,
+  SymbolicRepresentationCollection,
+  SymbolicPolyline,
+  SymbolicCircle,
+  ProfileCollection,
+  ProfileEntryJs,
+};
 
 const log = createLogger('Geometry');
 const FATAL_WASM_RELOAD_REQUIRED_MESSAGE = 'IFC-Lite WASM cannot recover from a fatal runtime error within the same document lifetime. Reload the page or recreate the worker process before calling init() again.';
@@ -228,16 +251,45 @@ export class IfcLiteBridge {
   }
 
   /**
-   * Parse a subset of IFC geometry entities by index range.
-   * Performs the full pre-pass but only processes entities in [startIdx, endIdx).
-   * Designed for Web Worker parallelization where each worker handles a slice.
+   * Extract raw profile polygons from all IfcExtrudedAreaSolid building elements.
+   *
+   * Returns profile outlines + placement transforms for clean 2D projection
+   * without the tessellation artifacts that EdgeExtractor produces.
+   *
+   * @param content    Raw IFC file text.
+   * @param modelIndex Federation model index (use 0 for single-model files).
    */
-  parseMeshesSubset(content: string, startIdx: number, endIdx: number): MeshCollection {
+  extractProfiles(content: string, modelIndex: number = 0): ProfileCollection {
     if (!this.ifcApi) {
       throw new Error('IFC-Lite not initialized. Call init() first.');
     }
     try {
-      const collection = this.ifcApi.parseMeshesSubset(content, startIdx, endIdx);
+      const collection = this.ifcApi.extractProfiles(content, modelIndex);
+      log.debug(`Extracted ${collection.length} profiles`, { operation: 'extractProfiles' });
+      return collection;
+    } catch (error) {
+      log.error('Failed to extract profiles', error, {
+        operation: 'extractProfiles',
+        data: { contentLength: content.length },
+      });
+      if (this.isWasmRuntimeError(error)) {
+        this.markFatalWasmRuntimeError();
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Parse a subset of IFC geometry entities by index range.
+   * Performs the full pre-pass but only processes entities in [startIdx, endIdx).
+   * Designed for Web Worker parallelization where each worker handles a slice.
+   */
+  parseMeshesSubset(content: string, startIdx: number, endIdx: number, skipExpensive: boolean = false): MeshCollection {
+    if (!this.ifcApi) {
+      throw new Error('IFC-Lite not initialized. Call init() first.');
+    }
+    try {
+      const collection = this.ifcApi.parseMeshesSubset(content, startIdx, endIdx, skipExpensive);
       log.debug(`Parsed subset [${startIdx}, ${endIdx}) → ${collection.length} meshes`, { operation: 'parseMeshesSubset' });
       return collection;
     } catch (error) {

@@ -99,11 +99,13 @@ impl GeometryRouter {
     }
 
     /// Detect RTC offset using pre-collected geometry jobs (avoids re-scanning the file).
+    /// Returns `None` when no usable translation samples were found, allowing
+    /// callers to distinguish "no shift needed" from "detection had no data".
     pub fn detect_rtc_offset_from_jobs(
         &self,
         jobs: &[(u32, usize, usize, IfcType)],
         decoder: &mut EntityDecoder,
-    ) -> (f64, f64, f64) {
+    ) -> Option<(f64, f64, f64)> {
         const MAX_SAMPLES: usize = 50;
         let translations: Vec<(f64, f64, f64)> = jobs
             .iter()
@@ -114,7 +116,10 @@ impl GeometryRouter {
             })
             .collect();
 
-        Self::rtc_offset_from_translations(&translations)
+        if translations.is_empty() {
+            return None;
+        }
+        Some(Self::rtc_offset_from_translations(&translations))
     }
 
     /// Process building element (IfcWall, IfcBeam, etc.) into mesh
