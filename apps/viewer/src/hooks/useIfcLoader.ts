@@ -93,6 +93,16 @@ function yieldToUiThread(): Promise<void> {
   });
 }
 
+function getGeometryStreamWatchdogMs(
+  desktopStableWasm: boolean,
+  batchCount: number,
+): number {
+  if (desktopStableWasm) {
+    return batchCount > 0 ? 5_000 : 15_000;
+  }
+  return batchCount > 0 ? 15_000 : 30_000;
+}
+
 function countNativeSpatialNodes(
   node: { children?: Array<{ children?: unknown[] }> } | null | undefined,
 ): number {
@@ -1635,10 +1645,15 @@ export function useIfcLoader() {
       setProgress({ phase: 'Starting geometry streaming', percent: 10 });
       setGeometryStreamingActive(true);
 
+      const shouldUseDesktopStableWasmGeometry =
+        isNativeFileHandle(file)
+        && fileName.toLowerCase().endsWith('.ifc')
+        && file.size < HUGE_NATIVE_FILE_THRESHOLD;
+
       // Initialize geometry processor first (WASM init is fast if already loaded)
       const geometryProcessor = new GeometryProcessor({
         quality: GeometryQuality.Balanced,
-        preferNative: !(isNativeFileHandle(file) && file.size < HUGE_NATIVE_FILE_THRESHOLD),
+        preferNative: false,
       });
       await geometryProcessor.init();
 
@@ -1657,10 +1672,13 @@ export function useIfcLoader() {
         const parser = new IfcParser();
         metadataStartMs = performance.now() - totalStartTime;
         console.log(`[useIfc] Data model parsing start for ${file.name}: ${metadataStartMs.toFixed(0)}ms`);
-        // wasmApi as fallback if Web Worker unavailable
-        const wasmApi = geometryProcessor.getApi();
+        // Do not share the geometry processor's WASM API with the parser on
+        // desktop fallback loads. Concurrent access can corrupt the WASM state
+        // and freeze or crash the viewer. Let the parser use worker/TS scanning
+        // instead.
+        const parserWasmApi = isNativeFileHandle(file) ? undefined : geometryProcessor.getApi();
         parser.parseColumnar(buffer, {
-          wasmApi,
+          wasmApi: parserWasmApi,
           // Emit spatial hierarchy EARLY — lets the panel render while
           // property/association parsing continues (~0.5-1s earlier).
           onSpatialReady: (partialStore) => {
@@ -1749,11 +1767,51 @@ export function useIfcLoader() {
       try {
         // Use dynamic batch sizing for optimal throughput
         const dynamicBatchConfig = getDynamicBatchConfig(fileSizeMB);
+        const geometryEvents = shouldUseDesktopStableWasmGeometry
+          ? geometryProcessor.processStreaming(new Uint8Array(buffer), undefined, dynamicBatchConfig)
+          : geometryProcessor.processAdaptive(new Uint8Array(buffer), {
+              sizeThreshold: 2 * 1024 * 1024, // 2MB threshold
+              batchSize: dynamicBatchConfig, // Dynamic batches: small first, then large
+            });
+        const geometryIterator = geometryEvents[Symbol.asyncIterator]();
+        let geometryIteratorClosed = false;
+        const closeGeometryIterator = async () => {
+          if (geometryIteratorClosed || typeof geometryIterator.return !== 'function') return;
+          geometryIteratorClosed = true;
+          try {
+            await geometryIterator.return();
+          } catch {
+            // Ignore iterator shutdown failures during recovery.
+          }
+        };
 
-        for await (const event of geometryProcessor.processAdaptive(new Uint8Array(buffer), {
-          sizeThreshold: 2 * 1024 * 1024, // 2MB threshold
-          batchSize: dynamicBatchConfig, // Dynamic batches: small first, then large
-        })) {
+        while (true) {
+          const watchdogMs = getGeometryStreamWatchdogMs(
+            shouldUseDesktopStableWasmGeometry,
+            batchCount,
+          );
+          let watchdogId: ReturnType<typeof globalThis.setTimeout> | null = null;
+          const nextResult = await Promise.race([
+            geometryIterator.next(),
+            new Promise<never>((_, reject) => {
+              watchdogId = globalThis.setTimeout(() => {
+                reject(new Error(
+                  `Geometry stream stalled after ${watchdogMs}ms while loading ${file.name}. ` +
+                  `Last rendered meshes: ${lastTotalMeshes}.`
+                ));
+              }, watchdogMs);
+            }),
+          ]);
+          if (watchdogId !== null) {
+            globalThis.clearTimeout(watchdogId);
+          }
+
+          if (nextResult.done) {
+            await closeGeometryIterator();
+            break;
+          }
+
+          const event = nextResult.value;
           const eventReceived = performance.now();
 
           switch (event.type) {
@@ -1915,8 +1973,8 @@ export function useIfcLoader() {
               });
               break;
           }
-
         }
+        await closeGeometryIterator();
       } catch (err) {
         if (loadSessionRef.current !== currentSession) return;
         console.error('[useIfc] Error in processing:', err);

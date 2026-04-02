@@ -242,6 +242,33 @@ export class GeometryProcessor {
   }
 
   /**
+   * Process IFC geometry directly from a filesystem path in native desktop
+   * hosts. This avoids copying IFC content through JS when the host already
+   * has the file path.
+   */
+  async processPath(path: string): Promise<GeometryResult> {
+    if (!this.isNative) {
+      throw new Error('Path-based geometry processing is only available in native desktop builds');
+    }
+    if (!this.platformBridge) {
+      await this.init();
+    }
+    if (!this.platformBridge?.processGeometryPath) {
+      throw new Error('Native platform bridge does not support file-path geometry processing');
+    }
+
+    const result = await this.platformBridge.processGeometryPath(path);
+    const coordinateInfo = this.coordinateHandler.processMeshes(result.meshes);
+
+    return {
+      meshes: result.meshes,
+      totalTriangles: result.totalTriangles,
+      totalVertices: result.totalVertices,
+      coordinateInfo,
+    };
+  }
+
+  /**
    * Collect meshes on main thread using IFC-Lite WASM
    */
   private async collectMeshesMainThread(buffer: Uint8Array, _entityIndex?: Map<number, any>): Promise<{ meshes: MeshData[]; buildingRotation?: number }> {

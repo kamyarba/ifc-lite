@@ -37,6 +37,7 @@ import {
   Layout,
   LayoutTemplate,
   FileCode2,
+  Settings,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -73,6 +74,7 @@ import { navigateToPath } from '@/services/app-navigation';
 import { getStartupHarnessRequest, setActiveHarnessRequest, tryClaimStartupHarnessRequest } from '@/services/desktop-harness';
 import { logToDesktopTerminal } from '@/services/desktop-logger';
 import { openIfcFileDialog, type NativeFileHandle } from '@/services/file-dialog';
+import { isTauri } from '@/lib/platform';
 import {
   closeActiveAnalysisExtension,
   getAnalysisExtensionsSnapshot,
@@ -319,6 +321,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
     () => analysisExtensionState.extensions.filter((extension) => (extension.placement ?? 'right') === 'bottom'),
     [analysisExtensionState.extensions],
   );
+  const desktopShell = isTauri();
 
   // Check which type geometries exist across ALL loaded models (federation-aware).
   // PERF: Use meshes.length as dep proxy instead of full geometryResult, and
@@ -1236,6 +1239,22 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
 
       {/* Right Side Actions */}
       <div className="flex items-center gap-2 ml-2 pl-2 border-l border-zinc-200 dark:border-zinc-700/60">
+        {desktopShell ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="rounded-full"
+                onClick={() => navigateToPath('/settings')}
+              >
+                <Settings className="!h-[20px] !w-[20px]" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Settings</TooltipContent>
+          </Tooltip>
+        ) : null}
+
         <Tooltip>
           <TooltipTrigger asChild>
             <div>
