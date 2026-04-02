@@ -11,7 +11,7 @@ import { SettingsPage } from './components/viewer/SettingsPage';
 import { UpgradePage } from './components/viewer/UpgradePage';
 import { BimProvider } from './sdk/BimProvider';
 import { Toaster } from './components/ui/toast';
-import { ClerkChatSync } from './lib/llm/ClerkChatSync';
+import { ClerkDesktopEntitlementSync } from './lib/desktop/ClerkDesktopEntitlementSync';
 import { isClerkConfigured } from './lib/llm/clerk-auth';
 import { useEffect, useState } from 'react';
 import { logToDesktopTerminal } from './services/desktop-logger';
@@ -47,7 +47,7 @@ export function App() {
 
   return (
     <BimProvider>
-      {clerkEnabled && <ClerkChatSync />}
+      {clerkEnabled && <ClerkDesktopEntitlementSync />}
       {isUpgradeRoute ? <UpgradePage /> : isSettingsRoute ? <SettingsPage /> : <ViewerLayout />}
       <Toaster />
     </BimProvider>

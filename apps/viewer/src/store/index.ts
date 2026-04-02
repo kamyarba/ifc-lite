@@ -32,6 +32,7 @@ import { createPinboardSlice, type PinboardSlice } from './slices/pinboardSlice.
 import { createLensSlice, type LensSlice } from './slices/lensSlice.js';
 import { createScriptSlice, type ScriptSlice } from './slices/scriptSlice.js';
 import { createChatSlice, type ChatSlice } from './slices/chatSlice.js';
+import { createDesktopEntitlementSlice, type DesktopEntitlementSlice } from './slices/desktopEntitlementSlice.js';
 import { invalidateVisibleBasketCache } from './basketVisibleSet.js';
 
 // Import constants for reset function
@@ -76,6 +77,7 @@ export type { ScriptSlice } from './slices/scriptSlice.js';
 
 // Re-export Chat types
 export type { ChatSlice } from './slices/chatSlice.js';
+export type { DesktopEntitlementSlice } from './slices/desktopEntitlementSlice.js';
 
 // Combined store type
 export type ViewerState = LoadingSlice &
@@ -97,7 +99,8 @@ export type ViewerState = LoadingSlice &
   PinboardSlice &
   LensSlice &
   ScriptSlice &
-  ChatSlice & {
+  ChatSlice &
+  DesktopEntitlementSlice & {
     resetViewerState: () => void;
   };
 
@@ -126,6 +129,7 @@ const createViewerStore = () => create<ViewerState>()((...args) => ({
   ...createLensSlice(...args),
   ...createScriptSlice(...args),
   ...createChatSlice(...args),
+  ...createDesktopEntitlementSlice(...args),
 
   // Reset all viewer state when loading new file
   // Note: Does NOT clear models - use clearAllModels() for that

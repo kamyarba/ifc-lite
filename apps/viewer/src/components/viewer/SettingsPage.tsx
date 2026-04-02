@@ -8,7 +8,15 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useViewerStore } from '@/store';
-import { buildDesktopUpgradeUrl, getDesktopFeatureCatalog, getDesktopPlanSummary, getDesktopPlanTier, isDesktopBillingEnforced } from '@/lib/desktop-product';
+import {
+  buildDesktopUpgradeUrl,
+  getDesktopFeatureCatalog,
+  getDesktopPlanSummary,
+  getDesktopPlanTier,
+  hasDesktopPro,
+  isDesktopBillingEnforced,
+  type DesktopEntitlement,
+} from '@/lib/desktop-product';
 import { isClerkConfigured } from '@/lib/llm/clerk-auth';
 import { navigateToPath } from '@/services/app-navigation';
 import {
@@ -19,7 +27,7 @@ import {
 
 export function SettingsPage() {
   const clerkEnabled = isClerkConfigured();
-  const chatHasPro = useViewerStore((s) => s.chatHasPro);
+  const desktopEntitlement = useViewerStore((s) => s.desktopEntitlement);
   const chatUsage = useViewerStore((s) => s.chatUsage);
   const [preferences, setPreferences] = useState(() => getDesktopPreferences());
   const returnTo = (() => {
@@ -34,9 +42,9 @@ export function SettingsPage() {
   const updatePreference = (updates: Partial<typeof preferences>) => {
     setPreferences(updateDesktopPreferences(updates));
   };
-  const planTier = getDesktopPlanTier(chatHasPro);
-  const planSummary = getDesktopPlanSummary(chatHasPro, chatUsage);
-  const featureCatalog = getDesktopFeatureCatalog(chatHasPro);
+  const planTier = getDesktopPlanTier(desktopEntitlement);
+  const planSummary = getDesktopPlanSummary(desktopEntitlement, chatUsage);
+  const featureCatalog = getDesktopFeatureCatalog(desktopEntitlement);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -112,7 +120,7 @@ export function SettingsPage() {
                   <div className="font-medium capitalize">{planTier} plan</div>
                   <p className="text-sm text-muted-foreground">{planSummary}</p>
                 </div>
-                {isDesktopBillingEnforced() && !chatHasPro && (
+                {isDesktopBillingEnforced() && !hasDesktopPro(desktopEntitlement) && (
                   <Button onClick={() => navigateToPath(buildDesktopUpgradeUrl('/settings'))}>
                     Upgrade to Pro
                   </Button>
@@ -149,7 +157,7 @@ export function SettingsPage() {
                 Auth and billing are not configured in this build. Set `VITE_CLERK_PUBLISHABLE_KEY` to enable sign-in and subscription flows.
               </div>
             ) : (
-              <SettingsAccountSection />
+              <SettingsAccountSection desktopEntitlement={desktopEntitlement} />
             )}
           </section>
         </div>
@@ -158,17 +166,41 @@ export function SettingsPage() {
   );
 }
 
-function SettingsAccountSection() {
-  const { has, isSignedIn } = useAuth();
+function describeDesktopStatus(entitlement: DesktopEntitlement): string {
+  switch (entitlement.status) {
+    case 'trial':
+      return entitlement.trialEndsAt
+        ? `Trial active until ${new Date(entitlement.trialEndsAt).toLocaleDateString()}`
+        : 'Trial active';
+    case 'grace_offline':
+      return entitlement.graceUntil
+        ? `Offline grace until ${new Date(entitlement.graceUntil).toLocaleDateString()}`
+        : 'Offline grace active';
+    case 'expired':
+      return 'Subscription expired';
+    case 'active':
+      return 'Subscription active';
+    case 'signed_out':
+      return 'Signed out';
+    case 'anonymous':
+      return 'Auth unavailable in this build';
+    default:
+      return entitlement.status;
+  }
+}
+
+function SettingsAccountSection({ desktopEntitlement }: { desktopEntitlement: DesktopEntitlement }) {
+  const { isSignedIn } = useAuth();
   const { user } = useUser();
-  const hasPro = isSignedIn && (has?.({ plan: 'pro' }) ?? has?.({ feature: 'pro_models' }) ?? false);
+  const hasPro = hasDesktopPro(desktopEntitlement);
+  const statusLabel = describeDesktopStatus(desktopEntitlement);
 
   return (
     <div className="space-y-4">
       <SignedOut>
         <div className="rounded-md border p-4">
           <p className="mb-3 text-sm text-muted-foreground">
-            Sign in to manage your plan and unlock paid AI models.
+            Sign in to sync your desktop plan, subscription status, and AI usage limits across web and desktop.
           </p>
           <SignInButton mode="modal" forceRedirectUrl="/settings" fallbackRedirectUrl="/settings">
             <Button>Sign in</Button>
@@ -185,11 +217,14 @@ function SettingsAccountSection() {
             <p className="text-sm text-muted-foreground">
               Plan: {hasPro ? 'Pro' : 'Free'}
             </p>
+            <p className="text-sm text-muted-foreground">
+              Status: {statusLabel}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <UserButton afterSignOutUrl="/" />
             <Button onClick={() => navigateToPath(buildDesktopUpgradeUrl('/settings'))}>
-              {hasPro ? 'Manage Plan' : 'Upgrade to Pro'}
+              {isSignedIn && hasPro ? 'Manage Plan' : 'Upgrade to Pro'}
             </Button>
           </div>
         </div>

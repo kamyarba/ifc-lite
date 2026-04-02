@@ -7,10 +7,12 @@ import { useEffect, useMemo } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useViewerStore } from '@/store';
+import { hasDesktopPro } from '@/lib/desktop-product';
 import { navigateToPath } from '@/services/app-navigation';
 
 export function UpgradePage() {
-  const hasPro = useViewerStore((s) => s.chatHasPro);
+  const desktopEntitlement = useViewerStore((s) => s.desktopEntitlement);
+  const hasPro = hasDesktopPro(desktopEntitlement);
   const returnTo = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const candidate = params.get('returnTo');

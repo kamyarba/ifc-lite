@@ -295,7 +295,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
   const setLensPanelVisible = useViewerStore((state) => state.setLensPanelVisible);
   const scriptPanelVisible = useViewerStore((state) => state.scriptPanelVisible);
   const setScriptPanelVisible = useViewerStore((state) => state.setScriptPanelVisible);
-  const chatHasPro = useViewerStore((state) => state.chatHasPro);
+  const desktopEntitlement = useViewerStore((state) => state.desktopEntitlement);
 
   // Check which type geometries exist across ALL loaded models (federation-aware).
   // PERF: Use meshes.length as dep proxy instead of full geometryResult, and
@@ -468,12 +468,12 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
   }, []);
 
   const requireDesktopFeature = useCallback((feature: DesktopFeature, label: string) => {
-    if (hasDesktopFeatureAccess(chatHasPro, feature)) {
+    if (hasDesktopFeatureAccess(desktopEntitlement, feature)) {
       return true;
     }
     promptDesktopUpgrade(label);
     return false;
-  }, [chatHasPro, promptDesktopUpgrade]);
+  }, [desktopEntitlement, promptDesktopUpgrade]);
 
   const handleToggleBottomPanel = useCallback((panel: 'script' | 'list') => {
     const isScriptPanel = panel === 'script';
@@ -734,7 +734,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent>
-          {hasDesktopFeatureAccess(chatHasPro, 'exports') ? (
+          {hasDesktopFeatureAccess(desktopEntitlement, 'exports') ? (
             <ExportDialog
               trigger={
                 <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
@@ -825,7 +825,7 @@ export function MainToolbar({ onShowShortcuts }: MainToolbarProps = {} as MainTo
       </DropdownMenu>
 
       {/* Export Changes Button - shows when there are pending mutations */}
-      {hasDesktopFeatureAccess(chatHasPro, 'exports') ? (
+      {hasDesktopFeatureAccess(desktopEntitlement, 'exports') ? (
         <ExportChangesButton />
       ) : null}
 
