@@ -706,7 +706,7 @@ export function ViewportContainer() {
                       key={`${file.name}-${file.timestamp}`}
                       type="button"
                       onClick={async () => {
-                        const cached = await getCachedFile(file.name);
+                        const cached = await getCachedFile(file);
                         if (cached) {
                           await loadFile(cached);
                           return;

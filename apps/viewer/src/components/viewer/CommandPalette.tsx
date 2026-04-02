@@ -270,7 +270,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         detail: formatFileSize(rf.size),
         action: () => {
           // Try loading from IndexedDB blob cache → dispatches to MainToolbar's loadFile
-          getCachedFile(fileName).then(file => {
+          getCachedFile(rf).then(file => {
             if (file) {
               window.dispatchEvent(new CustomEvent('ifc-lite:load-file', { detail: file }));
             } else {
