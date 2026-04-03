@@ -49,7 +49,7 @@ export class Scene {
   // Key = colorKey + ":" + sorted visible expressIds hash
   // This allows rendering partially visible batches as single draw calls instead of 10,000+ individual draws
   private partialBatchCache: Map<string, BatchedMesh> = new Map();
-  private partialBatchCacheKeys: Map<string, string> = new Map(); // colorKey -> current cache key (for invalidation)
+  private partialBatchCacheKeys: Map<string, string> = new Map(); // sourceBatchKey -> current cache key (for invalidation)
 
   // Color overlay system for lens coloring — NEVER modifies original batches.
   // Overlay batches render on top using depthCompare 'equal', so they only
@@ -1080,6 +1080,7 @@ export class Scene {
    * @returns BatchedMesh containing only visible elements, or undefined if no visible elements
    */
   getOrCreatePartialBatch(
+    sourceBatchKey: string,
     colorKey: string,
     visibleIds: Set<number>,
     device: GPUDevice,
@@ -1103,7 +1104,7 @@ export class Scene {
     const cacheKey = `${colorKey}:${idsHash}`;
 
     // Check if we already have this exact partial batch cached
-    const currentCacheKey = this.partialBatchCacheKeys.get(colorKey);
+    const currentCacheKey = this.partialBatchCacheKeys.get(sourceBatchKey);
     if (currentCacheKey === cacheKey) {
       const cached = this.partialBatchCache.get(cacheKey);
       if (cached) return cached;
@@ -1150,7 +1151,7 @@ export class Scene {
 
     // Cache it
     this.partialBatchCache.set(cacheKey, partialBatch);
-    this.partialBatchCacheKeys.set(colorKey, cacheKey);
+    this.partialBatchCacheKeys.set(sourceBatchKey, cacheKey);
 
     return partialBatch;
   }

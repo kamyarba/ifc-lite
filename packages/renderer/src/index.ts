@@ -954,7 +954,7 @@ export class Renderer {
                 // Pre-compute visibility for each batch (only when filtering is active)
                 // A batch is visible if ANY of its elements are visible
                 // A batch is fully visible if ALL of its elements are visible
-                const batchVisibility = new Map<string, { visible: boolean; fullyVisible: boolean }>();
+                const batchVisibility = new Map<typeof allBatchedMeshes[number], { visible: boolean; fullyVisible: boolean }>();
 
                 if (hasVisibilityFiltering) {
                     for (const batch of allBatchedMeshes) {
@@ -969,7 +969,7 @@ export class Renderer {
                             }
                         }
 
-                        batchVisibility.set(batch.colorKey, {
+                        batchVisibility.set(batch, {
                             visible: visibleCount > 0,
                             fullyVisible: visibleCount === total,
                         });
@@ -985,6 +985,7 @@ export class Renderer {
                 // PERFORMANCE FIX: Track partially visible batches for sub-batch rendering
                 // Instead of creating 10,000+ individual meshes, we create cached sub-batches
                 const partiallyVisibleBatches: Array<{
+                    sourceBatchKey: string;
                     colorKey: string;
                     visibleIds: Set<number>;
                     color: [number, number, number, number];
@@ -1001,7 +1002,7 @@ export class Renderer {
 
                     // Check visibility
                     if (hasVisibilityFiltering) {
-                        const vis = batchVisibility.get(batch.colorKey);
+                        const vis = batchVisibility.get(batch);
                         if (!vis || !vis.visible) continue; // Skip completely hidden batches
 
                         // Handle partially visible batches - create sub-batches instead of individual meshes
@@ -1017,6 +1018,7 @@ export class Renderer {
                             }
                             if (visibleIds.size > 0) {
                                 partiallyVisibleBatches.push({
+                                    sourceBatchKey: `${batch.colorKey}:${batch.expressIds.join(',')}`,
                                     colorKey: batch.colorKey,
                                     visibleIds,
                                     color: batch.color,
@@ -1102,9 +1104,10 @@ export class Renderer {
                 // This is the key optimization: instead of 10,000+ individual draw calls,
                 // we create cached sub-batches with only visible elements and render them as single draw calls
                 if (partiallyVisibleBatches.length > 0) {
-                    for (const { colorKey, visibleIds, color } of partiallyVisibleBatches) {
+                    for (const { sourceBatchKey, colorKey, visibleIds, color } of partiallyVisibleBatches) {
                         // Get or create a cached sub-batch for this visibility state
                         const subBatch = this.scene.getOrCreatePartialBatch(
+                            sourceBatchKey,
                             colorKey,
                             visibleIds,
                             device,
