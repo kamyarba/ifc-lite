@@ -1917,9 +1917,18 @@ export class Scene {
       for (const piece of pieces) {
         const positions = piece.positions;
         const indices = piece.indices;
+        const pieceEntityIds = piece.entityIds; // per-vertex IDs for merged meshes
 
         // Test each triangle
         for (let i = 0; i < indices.length; i += 3) {
+          // For color-merged meshes, skip triangles that don't belong to
+          // this entity.  Without this check, hitting ANY triangle in the
+          // merged batch would attribute it to the candidate expressId.
+          if (pieceEntityIds) {
+            const vertIdx = indices[i];
+            if (pieceEntityIds[vertIdx] !== expressId) continue;
+          }
+
           const i0 = indices[i] * 3;
           const i1 = indices[i + 1] * 3;
           const i2 = indices[i + 2] * 3;
