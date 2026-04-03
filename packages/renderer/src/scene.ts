@@ -335,11 +335,27 @@ export class Scene {
    * Optionally filter by modelIndex for multi-model safety.
    */
   getMeshDataPieces(expressId: number, modelIndex?: number): MeshData[] | undefined {
-    const pieces = this.meshDataMap.get(expressId);
+    let pieces = this.meshDataMap.get(expressId);
     if (!pieces || pieces.length === 0) return undefined;
-    if (modelIndex === undefined) return pieces;
-    const filtered = pieces.filter((p) => p.modelIndex === modelIndex);
-    return filtered.length > 0 ? filtered : undefined;
+    if (modelIndex !== undefined) {
+      pieces = pieces.filter((p) => p.modelIndex === modelIndex);
+      if (pieces.length === 0) return undefined;
+    }
+    // For color-merged batches, extract only this entity's vertices so
+    // selection highlighting is per-entity, not the entire merged batch.
+    if (pieces.some(p => p.entityIds)) {
+      const extracted: MeshData[] = [];
+      for (const piece of pieces) {
+        if (piece.entityIds) {
+          const ex = this.extractEntityFromMergedMesh(piece, expressId);
+          if (ex) extracted.push(ex);
+        } else {
+          extracted.push(piece);
+        }
+      }
+      return extracted.length > 0 ? extracted : undefined;
+    }
+    return pieces;
   }
 
   /**
