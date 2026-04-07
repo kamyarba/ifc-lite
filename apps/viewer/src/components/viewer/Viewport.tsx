@@ -312,7 +312,7 @@ export function Viewport({
     if (cesiumActive) {
       clearColorRef.current = [0, 0, 0, 0]; // fully transparent
     } else {
-      clearColorRef.current = getThemeClearColor(theme as 'light' | 'dark');
+      clearColorRef.current = getThemeClearColor(theme as 'light' | 'dark' | 'colorful');
     }
     rendererRef.current?.requestRender();
   }, [cesiumActive, theme]);
@@ -878,13 +878,25 @@ export function Viewport({
   // The model will be rendered by Cesium (as GLB) for correct positioning.
   // Canvas stays in the DOM for picking/interaction.
 
+  // Colorful mode: transparent WebGPU clear colour + CSS gradient on the
+  // canvas element.  The gradient is the *CSS background* of the <canvas>;
+  // premultiplied-alpha compositing shows it through transparent clear-colour
+  // regions while opaque model fragments (alpha=1) stay fully visible.
+  const canvasStyle = cesiumActive
+    ? { opacity: 0 }
+    : theme === 'colorful'
+      ? {
+          background: 'linear-gradient(180deg, #4a5a8a 0%, #6272a8 10%, #7e8dba 20%, #9aa3c8 32%, #b5b8d1 44%, #cdc3d4 56%, #dcccc8 68%, #e8d5be 80%, #f0ddb8 92%, #f5e2b6 100%)',
+        }
+      : undefined;
+
   return (
     <canvas
       ref={canvasRef}
       data-viewport="main"
       tabIndex={-1}
       className={`w-full h-full block ${cesiumActive ? 'relative z-[1]' : ''}`}
-      style={cesiumActive ? { opacity: 0 } : undefined}
+      style={canvasStyle}
       onPointerDown={focusViewportForKeyboardShortcuts}
     />
   );
