@@ -3,20 +3,20 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 /**
- * Main application component
+ * Main application component.
+ *
+ * The /settings route is used by the desktop shell (Tauri) for account
+ * and API key management. On the web viewer it is unreachable (no links
+ * navigate there and vercel.json does not rewrite it).
  */
 
 import { ViewerLayout } from './components/viewer/ViewerLayout';
 import { SettingsPage } from './components/viewer/SettingsPage';
-import { UpgradePage } from './components/viewer/UpgradePage';
 import { BimProvider } from './sdk/BimProvider';
 import { Toaster } from './components/ui/toast';
-import { ClerkChatSync } from './lib/llm/ClerkChatSync';
-import { isClerkConfigured } from './lib/llm/clerk-auth';
 import { useEffect, useState } from 'react';
 
 export function App() {
-  const clerkEnabled = isClerkConfigured();
   const [pathname, setPathname] = useState(() => window.location.pathname);
 
   useEffect(() => {
@@ -25,13 +25,9 @@ export function App() {
     return () => window.removeEventListener('popstate', onRouteChange);
   }, []);
 
-  const isUpgradeRoute = pathname === '/upgrade';
-  const isSettingsRoute = pathname === '/settings';
-
   return (
     <BimProvider>
-      {clerkEnabled && <ClerkChatSync />}
-      {isUpgradeRoute ? <UpgradePage /> : isSettingsRoute ? <SettingsPage /> : <ViewerLayout />}
+      {pathname === '/settings' ? <SettingsPage /> : <ViewerLayout />}
       <Toaster />
     </BimProvider>
   );
